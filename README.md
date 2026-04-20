@@ -25,6 +25,15 @@ docker compose up --build
 
 This starts the app on port `8080` plus PostgreSQL, MongoDB, and Redis. The database schema is created automatically on startup.
 
+### API documentation
+
+Once the stack is running, the interactive API reference is available at:
+
+| URL | Content |
+|-----|---------|
+| http://localhost:8080/swagger | Swagger UI (interactive) |
+| http://localhost:8080/openapi.yaml | Raw OpenAPI 3.0.3 spec |
+
 ### Stop
 
 ```bash

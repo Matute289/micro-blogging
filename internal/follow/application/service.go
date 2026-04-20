@@ -17,7 +17,7 @@ func NewFollowService(repo domain.FollowRepository) *FollowService {
 
 func (s *FollowService) Follow(ctx context.Context, followerID, followingID string) error {
 	if followerID == followingID {
-		return apperr.Invalid("cannot follow yourself")
+		return apperr.NotAllowed("cannot follow yourself")
 	}
 	return s.repo.Follow(ctx, followerID, followingID)
 }

@@ -13,11 +13,13 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
+	"UalaTwitter/internal/docs"
 	followapp "UalaTwitter/internal/follow/application"
 	followhandler "UalaTwitter/internal/follow/delivery/http"
 	followpg "UalaTwitter/internal/follow/infrastructure/postgres"
 	timelineapp "UalaTwitter/internal/timeline/application"
 	timelinehandler "UalaTwitter/internal/timeline/delivery/http"
+	timelinequeue "UalaTwitter/internal/timeline/infrastructure/queue"
 	timelineredis "UalaTwitter/internal/timeline/infrastructure/redis"
 	tweetapp "UalaTwitter/internal/tweet/application"
 	tweethandler "UalaTwitter/internal/tweet/delivery/http"
@@ -68,14 +70,19 @@ func main() {
 	tweetSvc := tweetapp.NewTweetService(tweetRepo)
 	timelineSvc := timelineapp.NewTimelineService(followRepo, tweetRepo, timelineCache)
 
+	// Fan-out queue + worker
+	fanOutQueue := timelinequeue.NewRedisQueue(redisClient)
+	go fanOutQueue.RunWorker(context.Background(), timelineSvc.FanOutTweet)
+
 	// Router
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Logger)
 	userhandler.NewUserHandler(userSvc).RegisterRoutes(r)
 	followhandler.NewFollowHandler(followSvc).RegisterRoutes(r)
-	tweethandler.NewTweetHandler(tweetSvc, timelineSvc).RegisterRoutes(r)
+	tweethandler.NewTweetHandler(tweetSvc, fanOutQueue).RegisterRoutes(r)
 	timelinehandler.NewTimelineHandler(timelineSvc).RegisterRoutes(r)
+	docs.RegisterRoutes(r)
 
 	addr := ":" + getEnv("PORT", "8080")
 	log.Printf("listening on %s", addr)

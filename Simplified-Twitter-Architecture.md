@@ -19,14 +19,22 @@ A read-optimized microblogging backend that allows users to post tweets, follow 
                         |  (chi router)    |
                         +--+---+---+---+---+
                            |   |   |   |
-              +------------+   |   |   +-------------+
-              |                |   |                 |
-              v                v   v                 v
-      +-------+------+  +------+---+--+  +-----------+--------+
-      |  PostgreSQL  |  |   MongoDB   |  |      Redis         |
-      |  (users +    |  |  (tweets)   |  |  (timeline cache)  |
-      |  follows)    |  |             |  |                    |
-      +--------------+  +-------------+  +--------------------+
+              +------------+   |   |   +---------------------+
+              |                |   |                         |
+              v                v   v                         v
+      +-------+------+  +------+---+--+  +-------------------+--------+
+      |  PostgreSQL  |  |   MongoDB   |  |         Redis               |
+      |  (users +    |  |  (tweets)   |  |  timeline cache             |
+      |  follows)    |  |             |  |  + fanout:queue (List)      |
+      +--------------+  +-------------+  +---+------------------------+
+                                             |
+                                             | BLPOP (background worker)
+                                             v
+                                    +--------+--------+
+                                    |  Fan-out Worker  |
+                                    |  (goroutine)     |
+                                    |  retry up to 15x |
+                                    +-----------------+
 ```
 
 ---
@@ -201,9 +209,19 @@ MongoDB  <-- Save tweet document
   |
   | (success)
   v
-HTTP Handler  --> 201 response to client
+HTTP Handler
   |
-  | go FanOutTweet()  [background goroutine, non-blocking]
+  | queue.Enqueue()  [Redis RPUSH to fanout:queue - fast, non-blocking]
+  v
+Redis  <-- RPUSH fanout:queue {poster_id, tweet_id, created_at}
+  |
+  v
+HTTP Handler  --> 201 response to client
+
+
+[Background Fan-out Worker - running as goroutine in main.go]
+  |
+  | BLPOP fanout:queue (blocking, 1s timeout)
   v
 PostgreSQL  <-- GetFollowers(alice)
   |
@@ -211,9 +229,12 @@ PostgreSQL  <-- GetFollowers(alice)
   v
 Redis  <-- ZADD timeline:{follower} score tweetID
            ZREMRANGEBYRANK (trim to 200)
+  |
+  | on PG or Redis error: requeue with attempt++ (up to 15 retries)
+  | after 15 failures: log error and drop
 ```
 
-The fan-out is asynchronous - the client receives `201` as soon as MongoDB confirms the write. Followers' caches are updated in the background.
+The tweet is saved to MongoDB and the fan-out job is enqueued before the `201` is sent. The actual cache update happens asynchronously in the worker goroutine. On transient infrastructure failures the message is requeued and retried, making the fan-out resilient without affecting write latency.
 
 ### 2. Get timeline (read path - cache hit)
 
@@ -273,7 +294,7 @@ Client
   v
 FollowService.Follow()
   |
-  | self-follow guard: alice == {id}? -> 400
+  | self-follow guard: alice == {id}? -> 405 Method Not Allowed
   v
 PostgreSQL  <-- INSERT INTO follows (follower_id, following_id) ON CONFLICT DO NOTHING
   |
@@ -287,7 +308,7 @@ HTTP Handler  --> 204 No Content
 
 The system is designed for a high read-to-write ratio, matching the real Twitter usage pattern.
 
-**Fan-out on write** is the core strategy: when a tweet is posted, its ID is immediately pushed into every follower's Redis timeline sorted set. The read path then only needs two fast lookups (Redis range + MongoDB `$in` by ID) regardless of how many users the caller follows.
+**Fan-out on write via async queue** is the core strategy: when a tweet is posted, a message is enqueued to a Redis List (`fanout:queue`). A background worker dequeues it and pushes the tweet ID into every follower's Redis timeline sorted set. The read path then only needs two fast lookups (Redis range + MongoDB `$in` by ID) regardless of how many users the caller follows. Transient failures in the worker are retried up to 15 times before the message is dropped.
 
 | Operation | Data store hit | Complexity |
 |-----------|---------------|------------|
@@ -298,7 +319,7 @@ The system is designed for a high read-to-write ratio, matching the real Twitter
 
 Where N = timeline size, K = result count, F = follower count.
 
-**Trade-off acknowledged:** for accounts with very large follower counts (celebrities with millions of followers), synchronous fan-out causes write latency spikes. The production solution is a hybrid approach: fan-out on write for regular users, fan-out on read for high-follower accounts, mediated by an async message queue (e.g., Kafka).
+**Trade-off acknowledged:** for accounts with very large follower counts (celebrities with millions of followers), fan-out write amplification grows linearly with follower count. The current worker processes all followers sequentially in a single goroutine. The production solution is a hybrid approach: fan-out on write for regular users, fan-out on read for high-follower accounts, with multiple parallel worker instances consuming from the queue (or migrating to Kafka for higher throughput).
 
 ---
 
@@ -362,10 +383,14 @@ UalaTwitter/
     timeline/
       application/                 <- TimelineService (get timeline, fan-out)
       infrastructure/redis/        <- Redis sorted-set cache adapter
+      infrastructure/queue/        <- Redis List queue + RunWorker (fan-out with retry)
       delivery/http/               <- HTTP handler
+    docs/
+      openapi.yaml                 <- OpenAPI 3.0.3 spec (embedded into binary)
+      handler.go                   <- serves GET /openapi.yaml and GET /swagger
   pkg/
     tweetid/                       <- Compose / Decompose tweet ID
-    apperr/                        <- Typed errors with HTTP status (Invalid, NotFound, Conflict)
+    apperr/                        <- Typed errors with HTTP status (Invalid, NotFound, Conflict, NotAllowed)
     httputil/                      <- WriteError: 4xx from apperr, 500 + slog for everything else
   Dockerfile
   docker-compose.yml

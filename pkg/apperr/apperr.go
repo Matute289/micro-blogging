@@ -11,8 +11,9 @@ type Error struct {
 func (e *Error) Error() string { return e.msg }
 func (e *Error) Status() int   { return e.status }
 
-func NotFound(msg string) *Error { return &Error{http.StatusNotFound, msg} }
-func Invalid(msg string) *Error  { return &Error{http.StatusBadRequest, msg} }
-func Conflict(msg string) *Error { return &Error{http.StatusConflict, msg} }
+func NotFound(msg string) *Error   { return &Error{http.StatusNotFound, msg} }
+func Invalid(msg string) *Error    { return &Error{http.StatusBadRequest, msg} }
+func Conflict(msg string) *Error   { return &Error{http.StatusConflict, msg} }
+func NotAllowed(msg string) *Error { return &Error{http.StatusMethodNotAllowed, msg} }
 
 var ErrNotFound = NotFound("not found")

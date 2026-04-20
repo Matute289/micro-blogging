@@ -1,0 +1,329 @@
+openapi: "3.0.3"
+
+info:
+  title: UalaTwitter API
+  description: |
+    Simplified microblogging backend. No authentication - pass the caller's UUID in
+    the `X-User-ID` header on every request that requires identity.
+  version: "1.0.0"
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+
+tags:
+  - name: users
+    description: User management
+  - name: tweets
+    description: Tweet operations
+  - name: follows
+    description: Social graph (follow / unfollow)
+  - name: timeline
+    description: Personalised feed
+
+paths:
+
+  # ── Users ────────────────────────────────────────────────────────────────
+
+  /users:
+    post:
+      tags: [users]
+      summary: Create a user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username]
+              properties:
+                username:
+                  type: string
+                  example: alice
+      responses:
+        "201":
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /users/{id}:
+    get:
+      tags: [users]
+      summary: Get a user by ID
+      parameters:
+        - $ref: "#/components/parameters/UserIDPath"
+      responses:
+        "200":
+          description: User found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Tweets ───────────────────────────────────────────────────────────────
+
+  /tweets:
+    post:
+      tags: [tweets]
+      summary: Post a tweet
+      description: |
+        Text must be 1–280 Unicode runes. Media items are URL references only
+        (no file upload). The tweet ID encodes author + creation time.
+      parameters:
+        - $ref: "#/components/parameters/XUserID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text:
+                  type: string
+                  minLength: 1
+                  maxLength: 280
+                  example: "Hello world!"
+                media:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/MediaItem"
+      responses:
+        "201":
+          description: Tweet created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Tweet"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /users/{id}/tweets:
+    get:
+      tags: [tweets]
+      summary: Get a user's tweets
+      description: Returns tweets newest-first with cursor-based pagination.
+      parameters:
+        - $ref: "#/components/parameters/UserIDPath"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Before"
+      responses:
+        "200":
+          description: List of tweets
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Tweet"
+
+  # ── Follows ──────────────────────────────────────────────────────────────
+
+  /users/{id}/follow:
+    post:
+      tags: [follows]
+      summary: Follow a user
+      description: Idempotent — following an already-followed user returns 204 with no error.
+      parameters:
+        - $ref: "#/components/parameters/XUserID"
+        - $ref: "#/components/parameters/UserIDPath"
+      responses:
+        "204":
+          description: Now following
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "405":
+          $ref: "#/components/responses/NotAllowed"
+
+    delete:
+      tags: [follows]
+      summary: Unfollow a user
+      parameters:
+        - $ref: "#/components/parameters/XUserID"
+        - $ref: "#/components/parameters/UserIDPath"
+      responses:
+        "204":
+          description: Unfollowed
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  # ── Timeline ─────────────────────────────────────────────────────────────
+
+  /timeline:
+    get:
+      tags: [timeline]
+      summary: Get the caller's timeline
+      description: |
+        Returns tweets from all users the caller follows, sorted newest-first.
+        Served from Redis cache when available; falls back to PostgreSQL + MongoDB on
+        cold start. Each timeline is capped at 200 cached entries.
+      parameters:
+        - $ref: "#/components/parameters/XUserID"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Before"
+      responses:
+        "200":
+          description: Timeline tweets
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Tweet"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+# ── Reusable components ───────────────────────────────────────────────────
+
+components:
+
+  parameters:
+    XUserID:
+      name: X-User-ID
+      in: header
+      required: true
+      description: UUID of the acting user (no authentication — header is trusted).
+      schema:
+        type: string
+        format: uuid
+        example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+
+    UserIDPath:
+      name: id
+      in: path
+      required: true
+      description: Target user UUID.
+      schema:
+        type: string
+        format: uuid
+        example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+
+    Limit:
+      name: limit
+      in: query
+      description: Maximum number of results (1–50, default 20).
+      schema:
+        type: integer
+        default: 20
+        minimum: 1
+        maximum: 50
+
+    Before:
+      name: before
+      in: query
+      description: |
+        Cursor for pagination. Pass the `id` of the last tweet from the previous
+        page to retrieve the next page.
+      schema:
+        type: string
+        example: "a1b2c3d4e5f67890abcdef1234567890_1713434400000"
+
+  schemas:
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        username:
+          type: string
+          example: alice
+        created_at:
+          type: string
+          format: date-time
+        last_seen_at:
+          type: string
+          format: date-time
+
+    Tweet:
+      type: object
+      properties:
+        id:
+          type: string
+          description: |
+            Composite ID encoding author UUID and creation timestamp:
+            `{32-char-hex-uuid}_{unix-milliseconds}`
+          example: "a1b2c3d4e5f67890abcdef1234567890_1713434400000"
+        user_id:
+          type: string
+          format: uuid
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        text:
+          type: string
+          maxLength: 280
+          example: "Hello world!"
+        media:
+          type: array
+          items:
+            $ref: "#/components/schemas/MediaItem"
+        created_at:
+          type: string
+          format: date-time
+
+    MediaItem:
+      type: object
+      required: [type, url]
+      properties:
+        type:
+          type: string
+          enum: [image, video, music]
+          example: image
+        url:
+          type: string
+          format: uri
+          example: "https://example.com/photo.jpg"
+
+  responses:
+    BadRequest:
+      description: Invalid input (missing field, empty tweet text, text over 280 chars, missing X-User-ID header).
+      content:
+        text/plain:
+          schema:
+            type: string
+          examples:
+            missingHeader:
+              value: "missing X-User-ID header"
+            emptyText:
+              value: "tweet text cannot be empty"
+            textTooLong:
+              value: "text exceeds 280 characters"
+            usernameRequired:
+              value: "username required"
+
+    NotFound:
+      description: Resource does not exist.
+      content:
+        text/plain:
+          schema:
+            type: string
+          example:
+            value: "not found"
+
+    Conflict:
+      description: Duplicate resource (e.g. username already taken).
+      content:
+        text/plain:
+          schema:
+            type: string
+          examples:
+            duplicateUsername:
+              value: "username already taken"
+
+    NotAllowed:
+      description: Operation not permitted (e.g. following yourself).
+      content:
+        text/plain:
+          schema:
+            type: string
+          examples:
+            selfFollow:
+              value: "cannot follow yourself"

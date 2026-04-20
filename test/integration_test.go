@@ -27,6 +27,7 @@ import (
 	followpg "UalaTwitter/internal/follow/infrastructure/postgres"
 	timelineapp "UalaTwitter/internal/timeline/application"
 	timelinehandler "UalaTwitter/internal/timeline/delivery/http"
+	timelinequeue "UalaTwitter/internal/timeline/infrastructure/queue"
 	timelineredis "UalaTwitter/internal/timeline/infrastructure/redis"
 	tweetapp "UalaTwitter/internal/tweet/application"
 	tweethandler "UalaTwitter/internal/tweet/delivery/http"
@@ -101,7 +102,8 @@ func buildServer(t *testing.T) *httptest.Server {
 	r.Use(middleware.RequestID)
 	userhandler.NewUserHandler(userSvc).RegisterRoutes(r)
 	followhandler.NewFollowHandler(followSvc).RegisterRoutes(r)
-	tweethandler.NewTweetHandler(tweetSvc, timelineSvc).RegisterRoutes(r)
+	fanOutQueue := timelinequeue.NewRedisQueue(redisClient)
+	tweethandler.NewTweetHandler(tweetSvc, fanOutQueue).RegisterRoutes(r)
 	timelinehandler.NewTimelineHandler(timelineSvc).RegisterRoutes(r)
 
 	return httptest.NewServer(r)
@@ -309,11 +311,11 @@ func TestIntegration(t *testing.T) {
 		}
 	})
 
-	t.Run("POST /users/:id/follow self-follow returns 400", func(t *testing.T) {
+	t.Run("POST /users/:id/follow self-follow returns 405", func(t *testing.T) {
 		resp := do("POST", "/users/"+alice.ID+"/follow", nil, xUser(alice.ID))
 		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusBadRequest {
-			t.Fatalf("want 400, got %d", resp.StatusCode)
+		if resp.StatusCode != http.StatusMethodNotAllowed {
+			t.Fatalf("want 405, got %d", resp.StatusCode)
 		}
 	})
 

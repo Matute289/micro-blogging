@@ -2,9 +2,12 @@ package application_test
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"testing"
 
 	"UalaTwitter/internal/follow/application"
+	"UalaTwitter/pkg/apperr"
 )
 
 type mockFollowRepo struct {
@@ -27,7 +30,11 @@ func TestFollow_SelfFollow(t *testing.T) {
 	svc := application.NewFollowService(&mockFollowRepo{})
 	err := svc.Follow(context.Background(), "user-1", "user-1")
 	if err == nil {
-		t.Error("expected error when following yourself")
+		t.Fatal("expected error when following yourself")
+	}
+	var appErr *apperr.Error
+	if !errors.As(err, &appErr) || appErr.Status() != http.StatusMethodNotAllowed {
+		t.Errorf("want 405 NotAllowed, got %v", err)
 	}
 }
 

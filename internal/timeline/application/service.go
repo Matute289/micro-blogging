@@ -31,20 +31,29 @@ func NewTimelineService(
 }
 
 // FanOutTweet pushes a new tweet ID to the Redis timeline of each follower that has a warm cache.
-// Called asynchronously from the tweet handler after a successful post.
-func (s *TimelineService) FanOutTweet(ctx context.Context, posterID, tweetID string, createdAt time.Time) {
+// Returns an error if Postgres or Redis is unavailable so the caller can retry.
+func (s *TimelineService) FanOutTweet(ctx context.Context, posterID, tweetID string, createdAt time.Time) error {
 	followers, err := s.followRepo.GetFollowers(ctx, posterID)
-	if err != nil || len(followers) == 0 {
-		return
+	if err != nil {
+		return err
+	}
+	if len(followers) == 0 {
+		return nil
 	}
 	score := float64(createdAt.UnixMilli())
 	for _, followerID := range followers {
 		exists, err := s.cache.Exists(ctx, followerID)
-		if err != nil || !exists {
+		if err != nil {
+			return err
+		}
+		if !exists {
 			continue // only push to warm caches; cold caches rebuild on first read
 		}
-		_ = s.cache.Push(ctx, followerID, tweetID, score)
+		if err := s.cache.Push(ctx, followerID, tweetID, score); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // GetTimeline returns the caller's timeline, newest first, with cursor-based pagination.

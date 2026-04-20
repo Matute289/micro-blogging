@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -13,18 +14,18 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-// TimelineFanOut is satisfied by timeline.TimelineService.
-type TimelineFanOut interface {
-	FanOutTweet(ctx context.Context, posterID, tweetID string, createdAt time.Time)
+// TweetEnqueuer is satisfied by queue.RedisQueue.
+type TweetEnqueuer interface {
+	Enqueue(ctx context.Context, posterID, tweetID string, createdAt time.Time) error
 }
 
 type TweetHandler struct {
-	svc     *application.TweetService
-	fanOut  TimelineFanOut
+	svc   *application.TweetService
+	queue TweetEnqueuer
 }
 
-func NewTweetHandler(svc *application.TweetService, fanOut TimelineFanOut) *TweetHandler {
-	return &TweetHandler{svc: svc, fanOut: fanOut}
+func NewTweetHandler(svc *application.TweetService, queue TweetEnqueuer) *TweetHandler {
+	return &TweetHandler{svc: svc, queue: queue}
 }
 
 func (h *TweetHandler) RegisterRoutes(r chi.Router) {
@@ -51,7 +52,9 @@ func (h *TweetHandler) Post(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, r, err)
 		return
 	}
-	go h.fanOut.FanOutTweet(context.Background(), userID, tweet.ID, tweet.CreatedAt)
+	if err := h.queue.Enqueue(r.Context(), userID, tweet.ID, tweet.CreatedAt); err != nil {
+		slog.Warn("failed to enqueue fanout", "tweet_id", tweet.ID, "err", err)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(tweet)
