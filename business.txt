@@ -1,0 +1,41 @@
+Assumptions - UalaTwitter
+
+1. No authentication or session management.
+   The X-User-ID request header is trusted as the caller's identity.
+   Rationale: spec states "all users are valid."
+
+2. Users must be created via POST /users before they can post tweets or follow others.
+   Rationale: PostgreSQL foreign keys on the follows table require a valid user record.
+
+3. Tweet text is required and limited to 280 characters (counted as Unicode runes).
+   An empty text field is rejected with 400 Bad Request.
+   A text field exceeding 280 characters is rejected with 400 Bad Request.
+   Media items (image, video, music) are URL references and are not counted against the limit.
+
+4. Media content is not uploaded or stored by this service.
+   Only URL references are stored in MongoDB. File hosting is out of scope.
+
+5. Timeline fan-out is synchronous for this implementation.
+   When a tweet is posted, the tweet ID is pushed to all followers' Redis timeline caches
+   in a background goroutine. For accounts with very large follower counts (>100k),
+   production would use an async queue (e.g., Kafka, SQS) to avoid write latency spikes.
+
+6. Fan-out only writes to already-warm caches.
+   If a follower has no cached timeline (first visit or expired), the cache is rebuilt
+   lazily on their next GET /timeline request.
+
+7. Unfollow does not retroactively purge the unfollowed user's tweets from the cache.
+   The cached timeline naturally becomes stale until the next cold rebuild.
+   This is an accepted eventual consistency trade-off.
+
+8. Timeline cache is capped at 200 entries per user to bound Redis memory usage.
+   Older tweets beyond 200 are accessible via GET /users/{id}/tweets or by paginating
+   the timeline with the "before" cursor (which falls back to MongoDB on cache miss).
+
+9. Pagination is cursor-based using the tweet ID as the cursor.
+   The tweet ID encodes the creation timestamp, so no separate timestamp field is needed.
+   Pass ?before=<tweet_id> to get the next page.
+
+10. The system is optimized for reads.
+    Write amplification (fan-out to all followers on each tweet) is the accepted cost
+    of O(1) timeline reads from Redis.
