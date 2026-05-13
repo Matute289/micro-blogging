@@ -1,4 +1,4 @@
-# UalaTwitter
+# MicroBlogging
 
 A simplified Twitter-like microblogging backend built in Go.
 
