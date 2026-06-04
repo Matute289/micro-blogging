@@ -78,6 +78,7 @@ func main() {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Logger)
+	r.Use(corsMiddleware)
 	userhandler.NewUserHandler(userSvc).RegisterRoutes(r)
 	followhandler.NewFollowHandler(followSvc).RegisterRoutes(r)
 	tweethandler.NewTweetHandler(tweetSvc, fanOutQueue).RegisterRoutes(r)
@@ -109,6 +110,19 @@ func migrate(ctx context.Context, pool *pgxpool.Pool) error {
 		CREATE INDEX IF NOT EXISTS idx_follows_following ON follows(following_id);
 	`)
 	return err
+}
+
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-User-ID, X-Request-ID")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func mustEnv(key string) string {
