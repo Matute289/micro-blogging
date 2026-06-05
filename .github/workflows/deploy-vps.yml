@@ -22,7 +22,7 @@ jobs:
             -t blog-api:latest .
 
       - name: Save image as tarball
-        run: docker save blog-api:latest | gzip > /tmp/blog-api.tar.gz
+        run: docker save blog-api:latest | gzip > blog-api.tar.gz
 
       - name: Copy image to VPS
         uses: appleboy/scp-action@v0.1.7
@@ -30,7 +30,7 @@ jobs:
           host: ${{ secrets.VPS_HOST }}
           username: mgrinberg
           key: ${{ secrets.VPS_SSH_KEY }}
-          source: /tmp/blog-api.tar.gz
+          source: blog-api.tar.gz
           target: /tmp/
 
       - name: Load image and restart on VPS
