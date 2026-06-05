@@ -1,0 +1,47 @@
+name: Deploy API to VPS
+
+on:
+  push:
+    branches: [vps-deploy]
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    name: Build blog-api image and deploy to VPS
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build blog-api image
+        run: |
+          docker buildx build --load \
+            -t blog-api:latest .
+
+      - name: Save image as tarball
+        run: docker save blog-api:latest | gzip > /tmp/blog-api.tar.gz
+
+      - name: Copy image to VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: mgrinberg
+          key: ${{ secrets.VPS_SSH_KEY }}
+          source: /tmp/blog-api.tar.gz
+          target: /tmp/
+
+      - name: Load image and restart on VPS
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: mgrinberg
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            docker load < /tmp/blog-api.tar.gz
+            rm /tmp/blog-api.tar.gz
+            cd /opt/micro-blogging
+            docker compose -f docker-compose.vps.yml --env-file .env.vps up -d --force-recreate blog-api
+            docker compose -f docker-compose.vps.yml --env-file .env.vps ps

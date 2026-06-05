@@ -1,0 +1,72 @@
+version: "3.9"
+
+services:
+  blog-postgres:
+    image: postgres:16-alpine
+    container_name: blog-postgres
+    environment:
+      POSTGRES_USER: ${BLOG_POSTGRES_USER}
+      POSTGRES_PASSWORD: ${BLOG_POSTGRES_PASSWORD}
+      POSTGRES_DB: ${BLOG_POSTGRES_DB}
+    volumes:
+      - /opt/micro-blogging/data/postgres:/var/lib/postgresql/data
+    mem_limit: 128m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${BLOG_POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  blog-mongodb:
+    image: mongo:7
+    container_name: blog-mongodb
+    volumes:
+      - /opt/micro-blogging/data/mongodb:/data/db
+    mem_limit: 192m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  blog-redis:
+    image: redis:7-alpine
+    container_name: blog-redis
+    mem_limit: 32m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  blog-api:
+    image: blog-api:latest
+    container_name: blog-api
+    ports:
+      - "127.0.0.1:8004:8080"
+    environment:
+      POSTGRES_URL: postgres://${BLOG_POSTGRES_USER}:${BLOG_POSTGRES_PASSWORD}@blog-postgres:5432/${BLOG_POSTGRES_DB}?sslmode=disable
+      MONGO_URL: mongodb://blog-mongodb:27017
+      MONGO_DB: ${BLOG_MONGO_DB}
+      REDIS_URL: redis://blog-redis:6379/0
+      PORT: "8080"
+    depends_on:
+      blog-postgres:
+        condition: service_healthy
+      blog-mongodb:
+        condition: service_healthy
+      blog-redis:
+        condition: service_healthy
+    mem_limit: 64m
+    restart: unless-stopped
+
+  blog-web:
+    image: blog-web:latest
+    container_name: blog-web
+    ports:
+      - "127.0.0.1:8003:80"
+    mem_limit: 32m
+    restart: unless-stopped
