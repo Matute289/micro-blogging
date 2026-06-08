@@ -111,6 +111,11 @@ func migrate(ctx context.Context, pool *pgxpool.Pool) error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_follows_follower  ON follows(follower_id);
 		CREATE INDEX IF NOT EXISTS idx_follows_following ON follows(following_id);
+		ALTER TABLE users ADD COLUMN IF NOT EXISTS oauth_provider TEXT;
+		ALTER TABLE users ADD COLUMN IF NOT EXISTS oauth_sub      TEXT;
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_users_oauth
+		    ON users(oauth_provider, oauth_sub)
+		    WHERE oauth_provider IS NOT NULL;
 	`)
 	return err
 }

@@ -7,6 +7,7 @@ import (
 
 	"UalaTwitter/internal/user/application"
 	"UalaTwitter/internal/user/domain"
+	"UalaTwitter/pkg/apperr"
 )
 
 type mockUserRepo struct {
@@ -36,6 +37,14 @@ func (m *mockUserRepo) GetByID(ctx context.Context, id string) (*domain.User, er
 		return nil, errors.New("not found")
 	}
 	return u, nil
+}
+
+func (m *mockUserRepo) FindByOAuth(_ context.Context, _, _ string) (*domain.User, error) {
+	return nil, apperr.ErrNotFound
+}
+
+func (m *mockUserRepo) FindByUsername(_ context.Context, _ string) (*domain.User, error) {
+	return nil, apperr.ErrNotFound
 }
 
 func TestCreateUser_ReturnsUserWithUsername(t *testing.T) {
