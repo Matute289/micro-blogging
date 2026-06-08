@@ -18,7 +18,7 @@ import (
 	followhandler "UalaTwitter/internal/follow/delivery/http"
 	followpg "UalaTwitter/internal/follow/infrastructure/postgres"
 	timelineapp "UalaTwitter/internal/timeline/application"
-	timelinehandler "UalaTwitter/internal/timeline/delivery/http"
+	timelinews "UalaTwitter/internal/timeline/delivery/ws"
 	timelinequeue "UalaTwitter/internal/timeline/infrastructure/queue"
 	timelineredis "UalaTwitter/internal/timeline/infrastructure/redis"
 	tweetapp "UalaTwitter/internal/tweet/application"
@@ -64,11 +64,14 @@ func main() {
 	tweetRepo := tweetmongo.NewTweetRepository(mongoDB)
 	timelineCache := timelineredis.NewTimelineCache(redisClient)
 
+	// WebSocket hub (implements application.Notifier)
+	wsHub := timelinews.NewHub()
+
 	// Services
 	userSvc := userapp.NewUserService(userRepo)
 	followSvc := followapp.NewFollowService(followRepo)
 	tweetSvc := tweetapp.NewTweetService(tweetRepo)
-	timelineSvc := timelineapp.NewTimelineService(followRepo, tweetRepo, timelineCache)
+	timelineSvc := timelineapp.NewTimelineService(followRepo, tweetRepo, timelineCache, wsHub)
 
 	// Fan-out queue + worker
 	fanOutQueue := timelinequeue.NewRedisQueue(redisClient)
@@ -82,7 +85,7 @@ func main() {
 	userhandler.NewUserHandler(userSvc).RegisterRoutes(r)
 	followhandler.NewFollowHandler(followSvc).RegisterRoutes(r)
 	tweethandler.NewTweetHandler(tweetSvc, fanOutQueue).RegisterRoutes(r)
-	timelinehandler.NewTimelineHandler(timelineSvc).RegisterRoutes(r)
+	timelinews.NewHandler(timelineSvc, wsHub).RegisterRoutes(r)
 	docs.RegisterRoutes(r)
 
 	addr := ":" + getEnv("PORT", "8080")
