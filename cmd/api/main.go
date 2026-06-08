@@ -14,6 +14,8 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 
 	"UalaTwitter/internal/docs"
+	authapp "UalaTwitter/internal/auth/application"
+	authhandler "UalaTwitter/internal/auth/delivery/http"
 	followapp "UalaTwitter/internal/follow/application"
 	followhandler "UalaTwitter/internal/follow/delivery/http"
 	followpg "UalaTwitter/internal/follow/infrastructure/postgres"
@@ -80,12 +82,27 @@ func main() {
 
 	jwtSecret := mustEnv("JWT_SECRET")
 
+	// Auth service
+	authSvc := authapp.NewAuthService(
+		userRepo,
+		jwtSecret,
+		getEnv("GOOGLE_CLIENT_ID", ""),
+		getEnv("GITHUB_CLIENT_ID", ""),
+		getEnv("GITHUB_CLIENT_SECRET", ""),
+		getEnv("APPLE_CLIENT_ID", ""),
+		"", // appleJWKSURL — uses default when empty
+	)
+
 	// Router
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Logger)
 	r.Use(corsMiddleware)
+
+	// Public routes
 	userhandler.NewUserHandler(userSvc).RegisterRoutes(r)
+	authhandler.NewAuthHandler(authSvc).RegisterRoutes(r)
+	docs.RegisterRoutes(r)
 
 	// Protected routes — require a valid JWT
 	r.Group(func(r chi.Router) {
@@ -96,7 +113,6 @@ func main() {
 
 	// WS uses ?token= JWT (validated inside handler)
 	timelinews.NewHandler(timelineSvc, wsHub, jwtSecret).RegisterRoutes(r)
-	docs.RegisterRoutes(r)
 
 	addr := ":" + getEnv("PORT", "8080")
 	log.Printf("listening on %s", addr)
@@ -134,7 +150,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-User-ID, X-Request-ID")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-ID")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
