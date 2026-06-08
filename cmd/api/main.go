@@ -27,6 +27,7 @@ import (
 	userapp "UalaTwitter/internal/user/application"
 	userhandler "UalaTwitter/internal/user/delivery/http"
 	userpg "UalaTwitter/internal/user/infrastructure/postgres"
+	mw "UalaTwitter/pkg/middleware"
 )
 
 func main() {
@@ -77,15 +78,24 @@ func main() {
 	fanOutQueue := timelinequeue.NewRedisQueue(redisClient)
 	go fanOutQueue.RunWorker(context.Background(), timelineSvc.FanOutTweet)
 
+	jwtSecret := mustEnv("JWT_SECRET")
+
 	// Router
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Logger)
 	r.Use(corsMiddleware)
 	userhandler.NewUserHandler(userSvc).RegisterRoutes(r)
-	followhandler.NewFollowHandler(followSvc).RegisterRoutes(r)
-	tweethandler.NewTweetHandler(tweetSvc, fanOutQueue).RegisterRoutes(r)
-	timelinews.NewHandler(timelineSvc, wsHub).RegisterRoutes(r)
+
+	// Protected routes — require a valid JWT
+	r.Group(func(r chi.Router) {
+		r.Use(mw.JWT(jwtSecret))
+		followhandler.NewFollowHandler(followSvc).RegisterRoutes(r)
+		tweethandler.NewTweetHandler(tweetSvc, fanOutQueue).RegisterRoutes(r)
+	})
+
+	// WS uses ?token= JWT (validated inside handler)
+	timelinews.NewHandler(timelineSvc, wsHub, jwtSecret).RegisterRoutes(r)
 	docs.RegisterRoutes(r)
 
 	addr := ":" + getEnv("PORT", "8080")

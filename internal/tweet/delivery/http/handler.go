@@ -11,6 +11,7 @@ import (
 	"UalaTwitter/internal/tweet/application"
 	"UalaTwitter/internal/tweet/domain"
 	"UalaTwitter/pkg/httputil"
+	mw "UalaTwitter/pkg/middleware"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -34,9 +35,9 @@ func (h *TweetHandler) RegisterRoutes(r chi.Router) {
 }
 
 func (h *TweetHandler) Post(w http.ResponseWriter, r *http.Request) {
-	userID := r.Header.Get("X-User-ID")
-	if userID == "" {
-		http.Error(w, "missing X-User-ID header", http.StatusBadRequest)
+	userID, ok := mw.UserIDFromCtx(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	var body struct {

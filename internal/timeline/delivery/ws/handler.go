@@ -10,6 +10,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	timelineapp "UalaTwitter/internal/timeline/application"
+	appjwt "UalaTwitter/pkg/jwt"
 )
 
 const (
@@ -27,13 +28,14 @@ var upgrader = websocket.Upgrader{
 
 // Handler upgrades GET /ws/timeline to a WebSocket connection.
 type Handler struct {
-	svc *timelineapp.TimelineService
-	hub *Hub
+	svc       *timelineapp.TimelineService
+	hub       *Hub
+	jwtSecret string
 }
 
 // NewHandler creates a Handler backed by the given service and hub.
-func NewHandler(svc *timelineapp.TimelineService, hub *Hub) *Handler {
-	return &Handler{svc: svc, hub: hub}
+func NewHandler(svc *timelineapp.TimelineService, hub *Hub, jwtSecret string) *Handler {
+	return &Handler{svc: svc, hub: hub, jwtSecret: jwtSecret}
 }
 
 // RegisterRoutes registers GET /ws/timeline on the router.
@@ -42,11 +44,17 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 }
 
 func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
-	userID := r.URL.Query().Get("user_id")
-	if userID == "" {
-		http.Error(w, "missing user_id", http.StatusBadRequest)
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		http.Error(w, "missing token", http.StatusBadRequest)
 		return
 	}
+	claims, err := appjwt.Verify(token, h.jwtSecret)
+	if err != nil {
+		http.Error(w, "invalid token", http.StatusUnauthorized)
+		return
+	}
+	userID := claims.UserID
 
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {

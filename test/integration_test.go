@@ -36,7 +36,20 @@ import (
 	userapp "UalaTwitter/internal/user/application"
 	userhandler "UalaTwitter/internal/user/delivery/http"
 	userpg "UalaTwitter/internal/user/infrastructure/postgres"
+	appjwt "UalaTwitter/pkg/jwt"
+	mw "UalaTwitter/pkg/middleware"
 )
+
+const testJWTSecret = "test-secret-for-integration-32ch"
+
+func makeToken(t *testing.T, userID, username string) string {
+	t.Helper()
+	tok, err := appjwt.Issue(userID, username, testJWTSecret, time.Hour)
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+	return tok
+}
 
 func envOr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
@@ -71,6 +84,11 @@ func buildServer(t *testing.T) *httptest.Server {
 		);
 		CREATE INDEX IF NOT EXISTS idx_follows_follower  ON follows(follower_id);
 		CREATE INDEX IF NOT EXISTS idx_follows_following ON follows(following_id);
+		ALTER TABLE users ADD COLUMN IF NOT EXISTS oauth_provider TEXT;
+		ALTER TABLE users ADD COLUMN IF NOT EXISTS oauth_sub      TEXT;
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_users_oauth
+		    ON users(oauth_provider, oauth_sub)
+		    WHERE oauth_provider IS NOT NULL;
 	`); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -107,9 +125,16 @@ func buildServer(t *testing.T) *httptest.Server {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	userhandler.NewUserHandler(userSvc).RegisterRoutes(r)
-	followhandler.NewFollowHandler(followSvc).RegisterRoutes(r)
-	tweethandler.NewTweetHandler(tweetSvc, fanOutQueue).RegisterRoutes(r)
-	timelinews.NewHandler(timelineSvc, wsHub).RegisterRoutes(r)
+
+	// Protected routes
+	r.Group(func(r chi.Router) {
+		r.Use(mw.JWT(testJWTSecret))
+		followhandler.NewFollowHandler(followSvc).RegisterRoutes(r)
+		tweethandler.NewTweetHandler(tweetSvc, fanOutQueue).RegisterRoutes(r)
+	})
+
+	// WS uses ?token= JWT (validated inside handler)
+	timelinews.NewHandler(timelineSvc, wsHub, testJWTSecret).RegisterRoutes(r)
 
 	return httptest.NewServer(r)
 }
@@ -160,8 +185,8 @@ func TestIntegration(t *testing.T) {
 		return resp
 	}
 
-	xUser := func(id string) map[string]string {
-		return map[string]string{"X-User-ID": id}
+	bearerAuth := func(id, username string) map[string]string {
+		return map[string]string{"Authorization": "Bearer " + makeToken(t, id, username)}
 	}
 
 	// Setup: create users.
@@ -231,7 +256,7 @@ func TestIntegration(t *testing.T) {
 	// Setup: bob posts an initial tweet.
 	var bobTweet tweetResp
 	{
-		resp := do("POST", "/tweets", jsonBody(map[string]string{"text": "hello from bob"}), xUser(bob.ID))
+		resp := do("POST", "/tweets", jsonBody(map[string]string{"text": "hello from bob"}), bearerAuth(bob.ID, bob.Username))
 		if resp.StatusCode != http.StatusCreated {
 			resp.Body.Close()
 			t.Fatalf("bob post tweet: got %d", resp.StatusCode)
@@ -249,7 +274,7 @@ func TestIntegration(t *testing.T) {
 	// ---- POST /tweets ----
 
 	t.Run("POST /tweets empty text returns 400", func(t *testing.T) {
-		resp := do("POST", "/tweets", jsonBody(map[string]string{"text": ""}), xUser(bob.ID))
+		resp := do("POST", "/tweets", jsonBody(map[string]string{"text": ""}), bearerAuth(bob.ID, bob.Username))
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Fatalf("want 400, got %d", resp.StatusCode)
@@ -257,7 +282,7 @@ func TestIntegration(t *testing.T) {
 	})
 
 	t.Run("POST /tweets 281 chars returns 400", func(t *testing.T) {
-		resp := do("POST", "/tweets", jsonBody(map[string]string{"text": strings.Repeat("a", 281)}), xUser(bob.ID))
+		resp := do("POST", "/tweets", jsonBody(map[string]string{"text": strings.Repeat("a", 281)}), bearerAuth(bob.ID, bob.Username))
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Fatalf("want 400, got %d", resp.StatusCode)
@@ -265,18 +290,18 @@ func TestIntegration(t *testing.T) {
 	})
 
 	t.Run("POST /tweets 280 chars returns 201", func(t *testing.T) {
-		resp := do("POST", "/tweets", jsonBody(map[string]string{"text": strings.Repeat("a", 280)}), xUser(bob.ID))
+		resp := do("POST", "/tweets", jsonBody(map[string]string{"text": strings.Repeat("a", 280)}), bearerAuth(bob.ID, bob.Username))
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusCreated {
 			t.Fatalf("want 201, got %d", resp.StatusCode)
 		}
 	})
 
-	t.Run("POST /tweets missing X-User-ID returns 400", func(t *testing.T) {
+	t.Run("POST /tweets missing auth returns 401", func(t *testing.T) {
 		resp := do("POST", "/tweets", jsonBody(map[string]string{"text": "hi"}), nil)
 		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusBadRequest {
-			t.Fatalf("want 400, got %d", resp.StatusCode)
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("want 401, got %d", resp.StatusCode)
 		}
 	})
 
@@ -302,7 +327,7 @@ func TestIntegration(t *testing.T) {
 
 	// Setup: alice follows bob.
 	{
-		resp := do("POST", "/users/"+bob.ID+"/follow", nil, xUser(alice.ID))
+		resp := do("POST", "/users/"+bob.ID+"/follow", nil, bearerAuth(alice.ID, alice.Username))
 		if resp.StatusCode != http.StatusNoContent {
 			resp.Body.Close()
 			t.Fatalf("alice follow bob: got %d", resp.StatusCode)
@@ -313,7 +338,7 @@ func TestIntegration(t *testing.T) {
 	// ---- POST /users/:id/follow ----
 
 	t.Run("POST /users/:id/follow is idempotent", func(t *testing.T) {
-		resp := do("POST", "/users/"+bob.ID+"/follow", nil, xUser(alice.ID))
+		resp := do("POST", "/users/"+bob.ID+"/follow", nil, bearerAuth(alice.ID, alice.Username))
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusNoContent {
 			t.Fatalf("want 204, got %d", resp.StatusCode)
@@ -321,27 +346,27 @@ func TestIntegration(t *testing.T) {
 	})
 
 	t.Run("POST /users/:id/follow self-follow returns 405", func(t *testing.T) {
-		resp := do("POST", "/users/"+alice.ID+"/follow", nil, xUser(alice.ID))
+		resp := do("POST", "/users/"+alice.ID+"/follow", nil, bearerAuth(alice.ID, alice.Username))
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusMethodNotAllowed {
 			t.Fatalf("want 405, got %d", resp.StatusCode)
 		}
 	})
 
-	t.Run("POST /users/:id/follow missing X-User-ID returns 400", func(t *testing.T) {
+	t.Run("POST /users/:id/follow missing auth returns 401", func(t *testing.T) {
 		resp := do("POST", "/users/"+bob.ID+"/follow", nil, nil)
 		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusBadRequest {
-			t.Fatalf("want 400, got %d", resp.StatusCode)
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("want 401, got %d", resp.StatusCode)
 		}
 	})
 
 	// ---- WS /ws/timeline ----
 
-	t.Run("WS /ws/timeline missing user_id returns 400", func(t *testing.T) {
+	t.Run("WS /ws/timeline missing token returns 400", func(t *testing.T) {
 		_, resp, err := websocket.DefaultDialer.Dial(wsURL(srv, "/ws/timeline"), nil)
 		if err == nil {
-			t.Fatal("expected connection to fail without user_id")
+			t.Fatal("expected connection to fail without token")
 		}
 		if resp == nil || resp.StatusCode != http.StatusBadRequest {
 			t.Fatalf("want 400 response, got: %v", resp)
@@ -350,7 +375,7 @@ func TestIntegration(t *testing.T) {
 
 	t.Run("WS /ws/timeline sends initial timeline on connect", func(t *testing.T) {
 		conn, _, err := websocket.DefaultDialer.Dial(
-			wsURL(srv, "/ws/timeline?user_id="+alice.ID), nil,
+			wsURL(srv, "/ws/timeline?token="+makeToken(t, alice.ID, alice.Username)), nil,
 		)
 		if err != nil {
 			t.Fatalf("dial: %v", err)
@@ -380,7 +405,7 @@ func TestIntegration(t *testing.T) {
 
 	t.Run("WS /ws/timeline receives real-time tweet push", func(t *testing.T) {
 		conn, _, err := websocket.DefaultDialer.Dial(
-			wsURL(srv, "/ws/timeline?user_id="+alice.ID), nil,
+			wsURL(srv, "/ws/timeline?token="+makeToken(t, alice.ID, alice.Username)), nil,
 		)
 		if err != nil {
 			t.Fatalf("dial: %v", err)
@@ -394,7 +419,7 @@ func TestIntegration(t *testing.T) {
 		}
 
 		// Bob posts a new tweet after alice is connected
-		resp := do("POST", "/tweets", jsonBody(map[string]string{"text": "real-time push test"}), xUser(bob.ID))
+		resp := do("POST", "/tweets", jsonBody(map[string]string{"text": "real-time push test"}), bearerAuth(bob.ID, bob.Username))
 		resp.Body.Close()
 		if resp.StatusCode != http.StatusCreated {
 			t.Fatalf("bob post tweet: got %d", resp.StatusCode)
@@ -427,18 +452,18 @@ func TestIntegration(t *testing.T) {
 	// ---- DELETE /users/:id/follow ----
 
 	t.Run("DELETE /users/:id/follow alice unfollows bob", func(t *testing.T) {
-		resp := do("DELETE", "/users/"+bob.ID+"/follow", nil, xUser(alice.ID))
+		resp := do("DELETE", "/users/"+bob.ID+"/follow", nil, bearerAuth(alice.ID, alice.Username))
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusNoContent {
 			t.Fatalf("want 204, got %d", resp.StatusCode)
 		}
 	})
 
-	t.Run("DELETE /users/:id/follow missing X-User-ID returns 400", func(t *testing.T) {
+	t.Run("DELETE /users/:id/follow missing auth returns 401", func(t *testing.T) {
 		resp := do("DELETE", "/users/"+bob.ID+"/follow", nil, nil)
 		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusBadRequest {
-			t.Fatalf("want 400, got %d", resp.StatusCode)
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("want 401, got %d", resp.StatusCode)
 		}
 	})
 }

@@ -5,6 +5,7 @@ import (
 
 	"UalaTwitter/internal/follow/application"
 	"UalaTwitter/pkg/httputil"
+	mw "UalaTwitter/pkg/middleware"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -22,9 +23,9 @@ func (h *FollowHandler) RegisterRoutes(r chi.Router) {
 }
 
 func (h *FollowHandler) Follow(w http.ResponseWriter, r *http.Request) {
-	followerID := r.Header.Get("X-User-ID")
-	if followerID == "" {
-		http.Error(w, "missing X-User-ID header", http.StatusBadRequest)
+	followerID, ok := mw.UserIDFromCtx(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	if err := h.svc.Follow(r.Context(), followerID, chi.URLParam(r, "id")); err != nil {
@@ -35,9 +36,9 @@ func (h *FollowHandler) Follow(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *FollowHandler) Unfollow(w http.ResponseWriter, r *http.Request) {
-	followerID := r.Header.Get("X-User-ID")
-	if followerID == "" {
-		http.Error(w, "missing X-User-ID header", http.StatusBadRequest)
+	followerID, ok := mw.UserIDFromCtx(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	if err := h.svc.Unfollow(r.Context(), followerID, chi.URLParam(r, "id")); err != nil {
