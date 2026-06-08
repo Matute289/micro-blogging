@@ -26,6 +26,9 @@ func (m *mockTweetRepo) GetByUserID(_ context.Context, _ string, _ int, _ string
 func (m *mockTweetRepo) GetByUserIDs(_ context.Context, _ []string, _ int, _ string) ([]*domain.Tweet, error) {
 	return nil, nil
 }
+func (m *mockTweetRepo) GetByID(_ context.Context, _ string) (*domain.Tweet, error) {
+	return nil, nil
+}
 func (m *mockTweetRepo) GetByIDs(_ context.Context, _ []string) ([]*domain.Tweet, error) {
 	return nil, nil
 }
