@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	followdomain "UalaTwitter/internal/follow/domain"
@@ -16,18 +17,30 @@ type TimelineCache interface {
 	Exists(ctx context.Context, userID string) (bool, error)
 }
 
+// Notifier is the outbound port for pushing tweets to connected clients (e.g. WebSocket hub).
+type Notifier interface {
+	Notify(ctx context.Context, userID string, tweet *tweetdomain.Tweet)
+}
+
+// NopNotifier is a no-op Notifier for tests that don't need WS push behavior.
+type NopNotifier struct{}
+
+func (NopNotifier) Notify(_ context.Context, _ string, _ *tweetdomain.Tweet) {}
+
 type TimelineService struct {
 	followRepo followdomain.FollowRepository
 	tweetRepo  tweetdomain.TweetRepository
 	cache      TimelineCache
+	notifier   Notifier
 }
 
 func NewTimelineService(
 	followRepo followdomain.FollowRepository,
 	tweetRepo tweetdomain.TweetRepository,
 	cache TimelineCache,
+	notifier Notifier,
 ) *TimelineService {
-	return &TimelineService{followRepo: followRepo, tweetRepo: tweetRepo, cache: cache}
+	return &TimelineService{followRepo: followRepo, tweetRepo: tweetRepo, cache: cache, notifier: notifier}
 }
 
 // FanOutTweet pushes a new tweet ID to the Redis timeline of each follower that has a warm cache.
@@ -40,17 +53,27 @@ func (s *TimelineService) FanOutTweet(ctx context.Context, posterID, tweetID str
 	if len(followers) == 0 {
 		return nil
 	}
+
+	tweet, err := s.tweetRepo.GetByID(ctx, tweetID)
+	if err != nil {
+		// The tweet was just saved, so this should never happen in practice.
+		slog.Warn("fanout: failed to fetch tweet for notification", "tweet_id", tweetID, "err", err)
+		tweet = nil
+	}
+
 	score := float64(createdAt.UnixMilli())
 	for _, followerID := range followers {
 		exists, err := s.cache.Exists(ctx, followerID)
 		if err != nil {
 			return err
 		}
-		if !exists {
-			continue // only push to warm caches; cold caches rebuild on first read
+		if exists {
+			if err := s.cache.Push(ctx, followerID, tweetID, score); err != nil {
+				return err
+			}
 		}
-		if err := s.cache.Push(ctx, followerID, tweetID, score); err != nil {
-			return err
+		if tweet != nil {
+			s.notifier.Notify(ctx, followerID, tweet)
 		}
 	}
 	return nil
