@@ -60,7 +60,8 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 		send:   make(chan []byte, 64),
 		hub:    h.hub,
 	}
-	h.hub.register(c)
+	// Registration happens after the initial timeline snapshot is queued,
+	// so the client always receives "timeline" before any "tweet" pushes.
 	defer h.hub.unregister(c)
 
 	// Send current timeline immediately after connecting.
@@ -68,8 +69,11 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		data, _ := json.Marshal(wsMessage{Type: "timeline", Data: tweets})
 		c.tryWrite(data)
+	} else {
+		slog.Warn("ws: failed to fetch initial timeline", "user_id", userID, "err", err)
 	}
 
+	h.hub.register(c)
 	go c.writePump()
 	c.readPump() // blocks until the client disconnects
 }

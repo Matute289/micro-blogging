@@ -7,8 +7,12 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	timelineapp "UalaTwitter/internal/timeline/application"
 	tweetdomain "UalaTwitter/internal/tweet/domain"
 )
+
+// Compile-time assertion: *Hub must implement the application-layer Notifier interface.
+var _ timelineapp.Notifier = (*Hub)(nil)
 
 // wsMessage is the JSON envelope sent to every WebSocket client.
 type wsMessage struct {
