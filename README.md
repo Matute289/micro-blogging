@@ -78,6 +78,12 @@ There is no login. Pass the caller's user ID in every request that requires iden
 X-User-ID: <user-uuid>
 ```
 
+For WebSocket connections (`/ws/timeline`), pass it as a query parameter instead (browsers cannot set custom headers on WebSocket handshakes):
+
+```
+ws://host/ws/timeline?user_id=<user-uuid>
+```
+
 ---
 
 ## Error responses
@@ -304,55 +310,56 @@ curl -X DELETE http://localhost:8080/users/b2c3d4e5-f6a7-8901-bcde-f12345678901/
 
 ---
 
-### Get timeline
+### Connect to timeline (WebSocket)
 
-Returns tweets from all users the caller follows, sorted newest first.
+Returns the caller's current timeline on connect, then streams new tweets in real-time as they are posted by followed users.
 
 ```
-GET /timeline
-Header: X-User-ID
+GET /ws/timeline?user_id=<uuid>
+(Upgrade: websocket)
 ```
 
-| Query param | Description | Default |
-|-------------|-------------|---------|
-| `limit` | Number of tweets to return (max 50) | 20 |
-| `before` | Tweet ID cursor - returns tweets older than this | - |
+The `user_id` query parameter is required (browsers cannot set custom headers on WebSocket connections).
 
-**Request**
+**Connect**
 ```bash
-curl http://localhost:8080/timeline \
-  -H "X-User-ID: a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+# Using websocat (https://github.com/vi/websocat)
+websocat "ws://localhost:8080/ws/timeline?user_id=a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 ```
 
-**Response** `200 OK`
+**Initial message** — sent immediately on connect:
 ```json
-[
-  {
-    "id": "b2c3d4e5f6a78901bcdeff12345678901_1713434460000",
-    "user_id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
-    "text": "Hey from bob!",
-    "created_at": "2026-04-18T10:01:00Z"
-  },
-  {
-    "id": "b2c3d4e5f6a78901bcdeff12345678901_1713434400000",
-    "user_id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
-    "text": "First tweet",
-    "created_at": "2026-04-18T10:00:00Z"
-  }
-]
+{
+  "type": "timeline",
+  "data": [
+    {
+      "id": "b2c3d4e5..._1713434460000",
+      "user_id": "b2c3d4e5-...",
+      "text": "Hey from bob!",
+      "created_at": "2026-04-18T10:01:00Z"
+    }
+  ]
+}
 ```
 
-**Paginate to next page:**
-```bash
-curl "http://localhost:8080/timeline?limit=20&before=b2c3d4e5f6a78901bcdeff12345678901_1713434400000" \
-  -H "X-User-ID: a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+**Real-time push** — sent whenever a followed user posts:
+```json
+{
+  "type": "tweet",
+  "data": {
+    "id": "b2c3d4e5..._1713434500000",
+    "user_id": "b2c3d4e5-...",
+    "text": "A new tweet!",
+    "created_at": "2026-04-18T10:05:00Z"
+  }
+}
 ```
 
 **Errors**
 
 | Status | Body |
 |--------|------|
-| `400` | `missing X-User-ID header` |
+| `400` | `missing user_id` |
 
 ---
 
@@ -381,7 +388,6 @@ curl -X POST http://localhost:8080/tweets \
   -H "X-User-ID: $BOB" \
   -d '{"text":"Hello from Bob!"}'
 
-# 5. Alice reads her timeline
-curl http://localhost:8080/timeline \
-  -H "X-User-ID: $ALICE"
+# 5. Alice reads her timeline (WebSocket — connect and receive initial snapshot)
+websocat "ws://localhost:8080/ws/timeline?user_id=$ALICE"
 ```

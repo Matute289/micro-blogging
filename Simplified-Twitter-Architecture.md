@@ -16,7 +16,7 @@ A read-optimized microblogging backend that allows users to post tweets, follow 
                                  v  REST / JSON
                         +--------+---------+
                         |    Go API        |  :8080
-                        |  (chi router)    |
+                        |  (chi + WS)      |
                         +--+---+---+---+---+
                            |   |   |   |
               +------------+   |   |   +---------------------+
@@ -111,7 +111,7 @@ HTTP handlers. Responsible for parsing requests, calling the application service
 | `user` | Create and retrieve users | PostgreSQL |
 | `follow` | Follow / unfollow, get social graph | PostgreSQL |
 | `tweet` | Post tweets, query by user | MongoDB |
-| `timeline` | Serve personalized feed, manage cache | Redis + fallback to Postgres + MongoDB |
+| `timeline` | Serve personalized feed via WebSocket, manage cache | Redis + fallback to Postgres + MongoDB |
 
 ---
 
@@ -236,12 +236,12 @@ Redis  <-- ZADD timeline:{follower} score tweetID
 
 The tweet is saved to MongoDB and the fan-out job is enqueued before the `201` is sent. The actual cache update happens asynchronously in the worker goroutine. On transient infrastructure failures the message is requeued and retried, making the fan-out resilient without affecting write latency.
 
-### 2. Get timeline (read path - cache hit)
+### 2. Get timeline via WebSocket (read path - cache hit)
 
 ```
 Client
   |
-  | GET /timeline  (X-User-ID: alice)
+  | WS /ws/timeline?user_id=alice (on connect)
   v
 HTTP Handler
   |
@@ -260,12 +260,12 @@ HTTP Handler  --> 200 JSON response
 
 Total: 2 database roundtrips, both to in-memory or indexed stores.
 
-### 3. Get timeline (read path - cache miss / cold start)
+### 3. Get timeline via WebSocket (read path - cache miss / cold start)
 
 ```
 Client
   |
-  | GET /timeline  (X-User-ID: alice)
+  | WS /ws/timeline?user_id=alice (on connect)
   v
 TimelineService
   |
@@ -384,7 +384,7 @@ UalaTwitter/
       application/                 <- TimelineService (get timeline, fan-out)
       infrastructure/redis/        <- Redis sorted-set cache adapter
       infrastructure/queue/        <- Redis List queue + RunWorker (fan-out with retry)
-      delivery/http/               <- HTTP handler
+      delivery/ws/                 <- WebSocket hub + handler (replaces REST /timeline)
     docs/
       openapi.yaml                 <- OpenAPI 3.0.3 spec (embedded into binary)
       handler.go                   <- serves GET /openapi.yaml and GET /swagger
