@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"math/big"
-	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -101,9 +100,4 @@ func jwkToRSA(k jwk) (*rsa.PublicKey, error) {
 		eInt = eInt<<8 + int(b)
 	}
 	return &rsa.PublicKey{N: new(big.Int).SetBytes(nBytes), E: eInt}, nil
-}
-
-// isWellFormedJWT verifies that idToken has 3 parts (basic sanity check before fetching JWKS)
-func isWellFormedJWT(token string) bool {
-	return strings.Count(token, ".") == 2
 }

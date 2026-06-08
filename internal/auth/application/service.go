@@ -157,7 +157,8 @@ func (s *AuthService) LoginWithGitHub(ctx context.Context, code string) (*domain
 }
 
 func (s *AuthService) LoginWithApple(ctx context.Context, idToken string) (*domain.User, error) {
-	resp, err := http.Get(s.appleJWKSURL)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, s.appleJWKSURL, nil)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("apple jwks fetch: %w", err)
 	}
