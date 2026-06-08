@@ -3,10 +3,10 @@ package mongo
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	"UalaTwitter/internal/tweet/domain"
+	"UalaTwitter/pkg/apperr"
 	"UalaTwitter/pkg/tweetid"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -48,7 +48,7 @@ func (r *TweetRepository) GetByID(ctx context.Context, id string) (*domain.Tweet
 	var doc tweetDoc
 	err := r.col.FindOne(ctx, bson.M{"_id": id}).Decode(&doc)
 	if errors.Is(err, mongo.ErrNoDocuments) {
-		return nil, fmt.Errorf("tweet not found: %s", id)
+		return nil, apperr.NotFound("tweet not found")
 	}
 	if err != nil {
 		return nil, err
