@@ -161,7 +161,7 @@ func TestGetTimeline_LimitClamped(t *testing.T) {
 
 // --- FanOutTweet tests ---
 
-func TestFanOutTweet_OnlyPushesToWarmCaches(t *testing.T) {
+func TestFanOutTweet_SkipsColdCachePush(t *testing.T) {
 	tweet := makeTweet("tweet-1", "poster")
 	followRepo := &mockFollowRepo{followers: []string{"follower-1", "follower-2"}}
 	tweetRepo := &mockTweetRepo{tweets: []*domain.Tweet{tweet}}

@@ -74,6 +74,10 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.hub.register(c)
+	// Both readPump and writePump call conn.Close() on exit, which closes the other.
+	// When that happens, unregister is called from the defer above. The unregister method
+	// checks c.closed before closing the send channel, so double-call is safe — the second
+	// call is a no-op.
 	go c.writePump()
 	c.readPump() // blocks until the client disconnects
 }

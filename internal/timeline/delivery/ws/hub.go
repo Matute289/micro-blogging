@@ -41,6 +41,7 @@ func (c *client) tryWrite(data []byte) {
 	select {
 	case c.send <- data:
 	default:
+		// Buffer full — message dropped. Slow clients accept loss over blocking fan-out.
 	}
 }
 
