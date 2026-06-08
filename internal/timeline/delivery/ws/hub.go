@@ -51,12 +51,6 @@ func NewHub() *Hub {
 	return &Hub{clients: make(map[string][]*client)}
 }
 
-// NopNotifier satisfies the application.Notifier interface without doing anything.
-// Use it in tests that instantiate TimelineService but don't need WS push.
-type NopNotifier struct{}
-
-func (NopNotifier) Notify(_ context.Context, _ string, _ *tweetdomain.Tweet) {}
-
 func (h *Hub) register(c *client) {
 	h.mu.Lock()
 	defer h.mu.Unlock()

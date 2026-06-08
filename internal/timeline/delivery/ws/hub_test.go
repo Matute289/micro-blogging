@@ -46,7 +46,7 @@ func TestHub_NotifyDeliversTweetToRegisteredClient(t *testing.T) {
 	}
 }
 
-func TestHub_NoDeliveryAfterUnregister(t *testing.T) {
+func TestHub_NoDeliveryToClosedClient(t *testing.T) {
 	hub := NewHub()
 	c := &client{
 		userID: "user1",
@@ -54,19 +54,57 @@ func TestHub_NoDeliveryAfterUnregister(t *testing.T) {
 		hub:    hub,
 	}
 	hub.register(c)
-	hub.unregister(c) // closes c.send, marks closed
 
-	// Notify after unregister: tryWrite must not panic and must not deliver
-	tweet := &tweetdomain.Tweet{ID: "t1"}
-	hub.Notify(context.Background(), "user1", tweet)
+	// Manually close the client (simulates what unregister does) without removing from hub
+	c.mu.Lock()
+	c.closed = true
+	close(c.send)
+	c.mu.Unlock()
 
-	// The hub must have removed the client
+	// tryWrite must be a no-op on a closed client — no panic
+	hub.Notify(context.Background(), "user1", &tweetdomain.Tweet{ID: "t1"})
+
+	// Channel is closed; verify no message was written (channel would be drained if written)
+	select {
+	case msg, ok := <-c.send:
+		if ok {
+			t.Errorf("expected no delivery to closed client, got: %s", msg)
+		}
+		// ok=false means channel closed — expected
+	default:
+		// nothing in channel — also expected
+	}
+}
+
+func TestHub_UnregisterRemovesClient(t *testing.T) {
+	hub := NewHub()
+	c := &client{userID: "user1", send: make(chan []byte, 1), hub: hub}
+	hub.register(c)
+	hub.unregister(c)
+
 	hub.mu.RLock()
 	_, exists := hub.clients["user1"]
 	hub.mu.RUnlock()
 	if exists {
 		t.Error("client should be removed from hub after unregister")
 	}
+}
+
+func TestHub_ConcurrentNotifyAndUnregister(t *testing.T) {
+	hub := NewHub()
+	c := &client{userID: "user1", send: make(chan []byte, 64), hub: hub}
+	hub.register(c)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 50; i++ {
+			hub.Notify(context.Background(), "user1", &tweetdomain.Tweet{ID: "t1"})
+		}
+	}()
+
+	hub.unregister(c)
+	<-done // wait for goroutine to finish — no race, no panic
 }
 
 func TestHub_MultipleClientsForSameUser(t *testing.T) {
