@@ -3,7 +3,9 @@ package application
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -15,6 +17,7 @@ import (
 
 	"UalaTwitter/internal/user/domain"
 	appjwt "UalaTwitter/pkg/jwt"
+	"UalaTwitter/pkg/apperr"
 )
 
 const jwtTTL = 7 * 24 * time.Hour
@@ -33,6 +36,12 @@ func NewAuthService(
 	userRepo domain.UserRepository,
 	jwtSecret, googleClientID, githubClientID, githubClientSecret, appleClientID, appleJWKSURL string,
 ) *AuthService {
+	if googleClientID == "" {
+		slog.Warn("GOOGLE_CLIENT_ID not set: Google token audience will not be validated")
+	}
+	if appleClientID == "" {
+		slog.Warn("APPLE_CLIENT_ID not set: Apple token audience will not be validated")
+	}
 	jwksURL := appleJWKSURL
 	if jwksURL == "" {
 		jwksURL = "https://appleid.apple.com/auth/keys"
@@ -75,6 +84,14 @@ func (s *AuthService) FindOrCreateUser(ctx context.Context, provider, sub, displ
 		OAuthSub:      sub,
 	}
 	if err := s.userRepo.Create(ctx, user); err != nil {
+		// If two concurrent first-logins race, the loser gets a conflict error.
+		// Retry the lookup to return the user that won.
+		var appErr *apperr.Error
+		if errors.As(err, &appErr) && appErr.Status() == http.StatusConflict {
+			if existing, findErr := s.userRepo.FindByOAuth(ctx, provider, sub); findErr == nil {
+				return existing, nil
+			}
+		}
 		return nil, err
 	}
 	return user, nil
@@ -145,6 +162,9 @@ func (s *AuthService) LoginWithGitHub(ctx context.Context, code string) (*domain
 		return nil, fmt.Errorf("github user info: %w", err)
 	}
 	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("github user info failed (status %d)", resp2.StatusCode)
+	}
 	var ghUser struct {
 		ID    int    `json:"id"`
 		Login string `json:"login"`

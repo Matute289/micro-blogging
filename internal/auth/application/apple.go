@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"math/big"
-	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -76,11 +75,6 @@ func verifyAppleToken(idToken string, jwksBody io.Reader, expectedAud string) (*
 	if expectedAud != "" && aud != expectedAud {
 		return nil, fmt.Errorf("unexpected aud: %s", aud)
 	}
-	exp, _ := mapClaims["exp"].(float64)
-	if time.Now().Unix() > int64(exp) {
-		return nil, fmt.Errorf("apple token expired")
-	}
-
 	sub, _ := mapClaims["sub"].(string)
 	email, _ := mapClaims["email"].(string)
 	return &appleClaims{sub: sub, email: email}, nil
