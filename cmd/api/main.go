@@ -14,11 +14,13 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 
 	"UalaTwitter/internal/docs"
+	authapp "UalaTwitter/internal/auth/application"
+	authhandler "UalaTwitter/internal/auth/delivery/http"
 	followapp "UalaTwitter/internal/follow/application"
 	followhandler "UalaTwitter/internal/follow/delivery/http"
 	followpg "UalaTwitter/internal/follow/infrastructure/postgres"
 	timelineapp "UalaTwitter/internal/timeline/application"
-	timelinehandler "UalaTwitter/internal/timeline/delivery/http"
+	timelinews "UalaTwitter/internal/timeline/delivery/ws"
 	timelinequeue "UalaTwitter/internal/timeline/infrastructure/queue"
 	timelineredis "UalaTwitter/internal/timeline/infrastructure/redis"
 	tweetapp "UalaTwitter/internal/tweet/application"
@@ -27,6 +29,7 @@ import (
 	userapp "UalaTwitter/internal/user/application"
 	userhandler "UalaTwitter/internal/user/delivery/http"
 	userpg "UalaTwitter/internal/user/infrastructure/postgres"
+	mw "UalaTwitter/pkg/middleware"
 )
 
 func main() {
@@ -64,26 +67,52 @@ func main() {
 	tweetRepo := tweetmongo.NewTweetRepository(mongoDB)
 	timelineCache := timelineredis.NewTimelineCache(redisClient)
 
+	// WebSocket hub (implements application.Notifier)
+	wsHub := timelinews.NewHub()
+
 	// Services
 	userSvc := userapp.NewUserService(userRepo)
 	followSvc := followapp.NewFollowService(followRepo)
 	tweetSvc := tweetapp.NewTweetService(tweetRepo)
-	timelineSvc := timelineapp.NewTimelineService(followRepo, tweetRepo, timelineCache)
+	timelineSvc := timelineapp.NewTimelineService(followRepo, tweetRepo, timelineCache, wsHub)
 
 	// Fan-out queue + worker
 	fanOutQueue := timelinequeue.NewRedisQueue(redisClient)
 	go fanOutQueue.RunWorker(context.Background(), timelineSvc.FanOutTweet)
+
+	jwtSecret := mustEnv("JWT_SECRET")
+
+	// Auth service
+	authSvc := authapp.NewAuthService(
+		userRepo,
+		jwtSecret,
+		getEnv("GOOGLE_CLIENT_ID", ""),
+		getEnv("GITHUB_CLIENT_ID", ""),
+		getEnv("GITHUB_CLIENT_SECRET", ""),
+		getEnv("APPLE_CLIENT_ID", ""),
+		"", // appleJWKSURL — uses default when empty
+	)
 
 	// Router
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Logger)
 	r.Use(corsMiddleware)
+
+	// Public routes
 	userhandler.NewUserHandler(userSvc).RegisterRoutes(r)
-	followhandler.NewFollowHandler(followSvc).RegisterRoutes(r)
-	tweethandler.NewTweetHandler(tweetSvc, fanOutQueue).RegisterRoutes(r)
-	timelinehandler.NewTimelineHandler(timelineSvc).RegisterRoutes(r)
+	authhandler.NewAuthHandler(authSvc).RegisterRoutes(r)
 	docs.RegisterRoutes(r)
+
+	// Protected routes — require a valid JWT
+	r.Group(func(r chi.Router) {
+		r.Use(mw.JWT(jwtSecret))
+		followhandler.NewFollowHandler(followSvc).RegisterRoutes(r)
+		tweethandler.NewTweetHandler(tweetSvc, fanOutQueue).RegisterRoutes(r)
+	})
+
+	// WS uses ?token= JWT (validated inside handler)
+	timelinews.NewHandler(timelineSvc, wsHub, jwtSecret).RegisterRoutes(r)
 
 	addr := ":" + getEnv("PORT", "8080")
 	log.Printf("listening on %s", addr)
@@ -108,6 +137,11 @@ func migrate(ctx context.Context, pool *pgxpool.Pool) error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_follows_follower  ON follows(follower_id);
 		CREATE INDEX IF NOT EXISTS idx_follows_following ON follows(following_id);
+		ALTER TABLE users ADD COLUMN IF NOT EXISTS oauth_provider TEXT;
+		ALTER TABLE users ADD COLUMN IF NOT EXISTS oauth_sub      TEXT;
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_users_oauth
+		    ON users(oauth_provider, oauth_sub)
+		    WHERE oauth_provider IS NOT NULL;
 	`)
 	return err
 }
@@ -116,7 +150,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-User-ID, X-Request-ID")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-ID")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return

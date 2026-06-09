@@ -2,9 +2,11 @@ package mongo
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"UalaTwitter/internal/tweet/domain"
+	"UalaTwitter/pkg/apperr"
 	"UalaTwitter/pkg/tweetid"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -40,6 +42,24 @@ func (r *TweetRepository) Save(ctx context.Context, t *domain.Tweet) error {
 		CreatedAtMs: t.CreatedAt.UnixMilli(),
 	})
 	return err
+}
+
+func (r *TweetRepository) GetByID(ctx context.Context, id string) (*domain.Tweet, error) {
+	var doc tweetDoc
+	err := r.col.FindOne(ctx, bson.M{"_id": id}).Decode(&doc)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, apperr.NotFound("tweet not found")
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &domain.Tweet{
+		ID:        doc.ID,
+		UserID:    doc.UserID,
+		Text:      doc.Text,
+		Media:     doc.Media,
+		CreatedAt: time.UnixMilli(doc.CreatedAtMs).UTC(),
+	}, nil
 }
 
 func (r *TweetRepository) GetByUserID(ctx context.Context, userID string, limit int, beforeID string) ([]*domain.Tweet, error) {

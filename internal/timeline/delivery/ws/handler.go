@@ -1,0 +1,135 @@
+package ws
+
+import (
+	"encoding/json"
+	"log/slog"
+	"net/http"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/gorilla/websocket"
+
+	timelineapp "UalaTwitter/internal/timeline/application"
+	appjwt "UalaTwitter/pkg/jwt"
+)
+
+const (
+	writeWait      = 10 * time.Second
+	pongWait       = 60 * time.Second
+	pingPeriod     = (pongWait * 9) / 10
+	maxMessageSize = 512
+)
+
+var upgrader = websocket.Upgrader{
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
+	CheckOrigin:     func(r *http.Request) bool { return true },
+}
+
+// Handler upgrades GET /ws/timeline to a WebSocket connection.
+type Handler struct {
+	svc       *timelineapp.TimelineService
+	hub       *Hub
+	jwtSecret string
+}
+
+// NewHandler creates a Handler backed by the given service and hub.
+func NewHandler(svc *timelineapp.TimelineService, hub *Hub, jwtSecret string) *Handler {
+	return &Handler{svc: svc, hub: hub, jwtSecret: jwtSecret}
+}
+
+// RegisterRoutes registers GET /ws/timeline on the router.
+func (h *Handler) RegisterRoutes(r chi.Router) {
+	r.Get("/ws/timeline", h.serve)
+}
+
+func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		http.Error(w, "missing token", http.StatusBadRequest)
+		return
+	}
+	claims, err := appjwt.Verify(token, h.jwtSecret)
+	if err != nil {
+		http.Error(w, "invalid token", http.StatusUnauthorized)
+		return
+	}
+	userID := claims.UserID
+
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		slog.Error("ws upgrade failed", "err", err)
+		return
+	}
+
+	c := &client{
+		userID: userID,
+		conn:   conn,
+		send:   make(chan []byte, 64),
+		hub:    h.hub,
+	}
+	// Registration happens after the initial timeline snapshot is queued,
+	// so the client always receives "timeline" before any "tweet" pushes.
+	defer h.hub.unregister(c)
+
+	// Send current timeline immediately after connecting.
+	tweets, err := h.svc.GetTimeline(r.Context(), userID, 20, "")
+	if err == nil {
+		data, _ := json.Marshal(wsMessage{Type: "timeline", Data: tweets})
+		c.tryWrite(data)
+	} else {
+		slog.Warn("ws: failed to fetch initial timeline", "user_id", userID, "err", err)
+	}
+
+	h.hub.register(c)
+	// Both readPump and writePump call conn.Close() on exit, which closes the other.
+	// When that happens, unregister is called from the defer above. The unregister method
+	// checks c.closed before closing the send channel, so double-call is safe — the second
+	// call is a no-op.
+	go c.writePump()
+	c.readPump() // blocks until the client disconnects
+}
+
+// readPump reads from the WebSocket connection to handle pong frames and detect disconnects.
+func (c *client) readPump() {
+	defer c.conn.Close()
+	c.conn.SetReadLimit(maxMessageSize)
+	_ = c.conn.SetReadDeadline(time.Now().Add(pongWait))
+	c.conn.SetPongHandler(func(string) error {
+		return c.conn.SetReadDeadline(time.Now().Add(pongWait))
+	})
+	for {
+		if _, _, err := c.conn.ReadMessage(); err != nil {
+			break
+		}
+	}
+}
+
+// writePump writes outgoing messages from the send channel to the WebSocket connection.
+// It also sends periodic pings to keep the connection alive.
+func (c *client) writePump() {
+	ticker := time.NewTicker(pingPeriod)
+	defer func() {
+		ticker.Stop()
+		c.conn.Close()
+	}()
+	for {
+		select {
+		case msg, ok := <-c.send:
+			_ = c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if !ok {
+				// Channel closed by hub.unregister.
+				_ = c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+				return
+			}
+			if err := c.conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+				return
+			}
+		case <-ticker.C:
+			_ = c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
+		}
+	}
+}
