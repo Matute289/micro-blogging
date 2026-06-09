@@ -2,7 +2,7 @@ name: Deploy API to VPS
 
 on:
   push:
-    branches: [vps-deploy]
+    branches: [master]
   workflow_dispatch:
 
 jobs:
