@@ -33,7 +33,7 @@ jobs:
           source: blog-api.tar.gz
           target: /tmp/
 
-      - name: Load image and restart on VPS
+      - name: Load image on VPS (service is paused, no auto-start)
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.VPS_HOST }}
@@ -42,6 +42,3 @@ jobs:
           script: |
             docker load < /tmp/blog-api.tar.gz
             rm /tmp/blog-api.tar.gz
-            cd /opt/micro-blogging
-            docker compose -f docker-compose.vps.yml --env-file .env.vps up -d --force-recreate blog-api
-            docker compose -f docker-compose.vps.yml --env-file .env.vps ps
